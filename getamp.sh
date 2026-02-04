@@ -768,111 +768,25 @@ EOF
 	fi
 }
 
-function installDocker {
-	echo ""
-	
-	if [[ "$DOCKER_IS_INSTALLED" ]]; then
-		echo "Docker is already installed."
-		echo "If you didn't install Docker from the official Docker repositories, then it may not operate correctly with AMP."
-		echo "Do you want to remove the existing Docker installation and install Docker from the official Docker repositories, if available for your system?"
-		echo "This will also stop any existing running Docker containers."
-		read -rp "[y/N] " reInstallDocker
-		reInstallDocker=${reInstallDocker:-n}
-		if [[ ! "$reInstallDocker" =~ ^[Yy]$ ]]; then
-			echo "Skipping Docker re-installation..."
-			{
-				usermod -a -G docker $AMP_SYS_USER
-				systemctl enable docker
-				systemctl start docker
-			} &>> "$LOG_FILE"
-			return
-		fi
-	fi
-
-	echo "Installing Docker..."
-
-	IFS='|' read -r BASE_ID BASE_SUITE BASE_VERSION_ID < <(mapUpstream)
-	DOCKER_REPO_AVAILABLE=false
-
-    case "$BASE_ID" in
-        ubuntu|debian)
-			if wget -q --spider https://download.docker.com/linux/$BASE_ID/dists/$BASE_SUITE/ >/dev/null 2>&1; then
-				DOCKER_REPO_AVAILABLE=true
-				if [[ "$reInstallDocker" =~ ^[Yy]$ ]]; then
-					REMOVE_DOCKER_PACKAGES="docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc"
-				fi
-				[[ -f /usr/share/keyrings/download.docker.com.gpg ]] && rm -f /usr/share/keyrings/download.docker.com.gpg >/dev/null 2>&1
-				[[ -f /etc/apt/sources.list.d/download.docker.com.list ]] && rm -f /etc/apt/sources.list.d/download.docker.com.list >/dev/null 2>&1
-				[[ -f /etc/apt/sources.list.d/docker.list ]] && rm -f /etc/apt/sources.list.d/docker.list >/dev/null 2>&1
-				if { [[ "$BASE_ID" == "ubuntu" ]] && version_ge "$BASE_VERSION_ID" "22.04"; } || { [[ "$BASE_ID" == "debian" ]] && version_ge "$BASE_VERSION_ID" "12"; }; then
-					printf "Types: deb\nURIs: https://download.docker.com/linux/%s\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /usr/share/keyrings/docker.asc\n" "$BASE_ID" "$BASE_SUITE" "$(dpkg --print-architecture)" \
-					| tee /etc/apt/sources.list.d/docker.sources > /dev/null
-				else
-					echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.asc] https://download.docker.com/linux/$BASE_ID $BASE_SUITE stable" \
-					| tee /etc/apt/sources.list.d/docker.list > /dev/null
-				fi
-				{
-					install -d -m 0755 /usr/share/keyrings
-					wget -qO /usr/share/keyrings/docker.asc https://download.docker.com/linux/$BASE_ID/gpg
-					chmod a+r /usr/share/keyrings/docker.asc
-					$PM_COMMAND update
-					DOCKER_PACKAGES="docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
-				} &>> "$LOG_FILE"
-			fi
-            ;;
-        rhel|fedora|centos)
-			if wget -q --spider https://download.docker.com/linux/$BASE_ID/ >/dev/null 2>&1; then
-				DOCKER_REPO_AVAILABLE=true
-				[[ -f /etc/yum.repos.d/docker-ce.repo ]] && rm -f /etc/yum.repos.d/docker-ce.repo >/dev/null 2>&1
-				if [[ "$reInstallDocker" =~ ^[Yy]$ ]]; then
-					REMOVE_DOCKER_PACKAGES="docker docker-client docker-client-latest docker-common docker-latest docker-latest-logrotate docker-logrotate docker-selinux docker-engine-selinux docker-engine podman runc"
-				fi
-				if [[ "$PM_COMMAND" == "yum" ]]; then
-					{
-						$PM_COMMAND "${PM_INSTALL[@]}" yum-utils
-						yum-config-manager --add-repo https://download.docker.com/linux/$BASE_ID/docker-ce.repo
-					} &>> "$LOG_FILE"
-				elif [[ "$PM_COMMAND" == "dnf" ]]; then
-					{
-						$PM_COMMAND "${PM_INSTALL[@]}" dnf-plugins-core
-						$PM_COMMAND config-manager --add-repo https://download.docker.com/linux/$BASE_ID/docker-ce.repo
-					} &>> "$LOG_FILE"
-				fi
-				DOCKER_PACKAGES="docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
-			fi
-            ;;
-        *) ;;
-    esac
-
-	if [[ ! $DOCKER_REPO_AVAILABLE ]]; then
-		if [[ "$DOCKER_IS_INSTALLED" ]]; then
-			echo "Automatic Docker re-installation is not supported on your system at this time. After setup completes, please investigate using your current Docker installation with AMP, and if necessary re-installing Docker manually from the official Docker sources. See https://docs.docker.com/engine/install/ for more information. If you re-install Docker manually, also ensure that the '$AMP_SYS_USER' user is in the 'docker' group."
-			echo "Continuing without re-installing Docker..."
-			{
-				usermod -a -G docker $AMP_SYS_USER
-				systemctl enable docker
-				systemctl start docker
-			} &>> "$LOG_FILE"
-			return
-		else
-			echo "Automatic Docker installation is not supported on your system at this time. Please investigate installing it manually after setup completes. See https://docs.docker.com/engine/install/ for more information. If you install Docker manually, also ensure that the '$AMP_SYS_USER' user is added to the 'docker' group."
-			echo "Continuing without installing Docker..."
-			PROVISIONFLAGS="${PROVISIONFLAGS/ +ADSModule.Defaults.UseDocker True/}"
-			return
-		fi
-	else
+function installPodman {
+	if [ "$PODMAN_IS_INSTALLED" ] && [ "$UIDMAP_IS_INSTALLED" ]; then
+		echo "Podman already installed. Skipping..."
 		{
-			if [[ "$reInstallDocker" =~ ^[Yy]$ ]] && [[ -n "$REMOVE_DOCKER_PACKAGES" ]]; then
-				docker ps -q | xargs -r docker stop
-				systemctl stop docker
-				for pkg in $REMOVE_DOCKER_PACKAGES; do $PM_COMMAND "${PM_UNINSTALL[@]}" $pkg; done
-			fi
-			$PM_COMMAND "${PM_INSTALL[@]}" $DOCKER_PACKAGES
-			systemctl enable docker
-			systemctl start docker
-			usermod -a -G docker $AMP_SYS_USER
+			loginctl enable-linger amp
 		} &>> "$LOG_FILE"
+		return
 	fi
+
+	if [ "$ARCH" != "x86_64" ]; then
+		echo "AMP's Podman mode is only supported on x86_64 systems. You are running $ARCH"
+		exit 64
+	fi
+
+	echo "Installing Podman..."
+	{
+		$PM_COMMAND "${PM_INSTALL[@]}" $PODMAN_PACKAGES
+		loginctl enable-linger amp
+	} &>> "$LOG_FILE"
 }
 
 function install32BitDeps {
@@ -930,8 +844,8 @@ function installDependencies {
 
 	JQ_IS_PRESENT="$(isPresent jq)"
 
-	if [[ "$installDocker" =~ ^[Yy]$ ]]; then
-		installDocker
+	if [[ "$installPodman" =~ ^[Yy]$ ]]; then
+		installPodman
 		PROVISIONFLAGS="$PROVISIONFLAGS +ADSModule.Defaults.UseDocker True"
 	fi
 
@@ -1019,6 +933,10 @@ EOF
 		} > ./CubeCoders.repo 2>>"$LOG_FILE"
 		yum-config-manager --add-repo ./CubeCoders.repo &>> "$LOG_FILE"
 		rm ./CubeCoders.repo > /dev/null
+    elif [ "$ZYPPER_IS_PRESENT" ]; then
+        echo "Adding CubeCoders repository for Zypper..."
+		wget -P /etc/zypp/repos.d "https://cdn-repo.c7rs.com/${reposuffix}CubeCoders.repo" &>> "$LOG_FILE"
+        zypper refresh &>> "$LOG_FILE"
 	fi
 }
 
@@ -1196,7 +1114,7 @@ function promptLogUpload {
 
 	if [[ "$uploadlog" =~ ^[Yy]$ ]]; then
 		RESPONSE=$(curl -s -X POST -F "content=<${LOG_FILE}" https://dpaste.org/api/)
-		URL=$(echo $RESPONSE | grep -o 'https://dpaste.org/[a-zA-Z0-9]*')
+		URL=$(echo "$RESPONSE" | grep -o 'https://dpaste.org/[a-zA-Z0-9]*')
 		if [ -z "$url" ]; then
 			echo "Failed to upload log file. Please check $LOG_FILE manually."
 		else
@@ -1247,6 +1165,12 @@ function debian13upgrade {
 	fi
 }
 
+function rebootNow {
+	echo "Rebooting system now..."
+	sync;sync;sync
+	reboot
+}
+
 function uninstall_notyettested {
 	clear
 	echo "UNTESTED CODE - COULD CAUSE TOTAL SYSTEM DATA DESTRUCTION - BACKUP FIRST!"
@@ -1257,7 +1181,7 @@ function uninstall_notyettested {
 	echo
 	prnt "Uninstalling AMP will permanently and irreversibly destroy all applications managed by AMP on this system, with no way to restore that data."
 	echo
-	echo "Some components such as Java, Docker and other 3rd party tools will not be removed."
+	echo "Some components such as Java, Podman and other 3rd party tools will not be removed."
 	echo
 	echo "Press CTRL+C to cancel."
 	echo
@@ -1351,9 +1275,9 @@ echo -en "Instance Manager:\t\t"| tee -a $INSTALL_SUMMARY
 if [ "$AMPINSTMGR_IS_INSTALLED" ]; then echo "Already installed"; else echo "To be installed"; fi| tee -a $INSTALL_SUMMARY
 echo -en "HTTPS setup:\t\t\t"| tee -a $INSTALL_SUMMARY
 if [[ "$setupnginx" =~ ^[Yy]$ ]]; then echo "Yes, via nginx with domain $nginxdomain"; else echo "No"; fi| tee -a $INSTALL_SUMMARY
-noReason=$( [[ "$installDocker" =~ ^[Yy]$ ]] && echo "Not required (replying on Docker)" || echo "No" )
-echo -en "Install Docker:\t\t\t" | tee -a $INSTALL_SUMMARY
-if [[ "$installDocker" =~ ^[Yy]$ ]]; then echo "Yes"; else echo "No"; fi | tee -a $INSTALL_SUMMARY
+noReason=$( [[ "$installPodman" =~ ^[Yy]$ ]] && echo "Not required (replying on Podman)" || echo "No" )
+echo -en "Install Podman:\t\t\t" | tee -a $INSTALL_SUMMARY
+if [[ "$installPodman" =~ ^[Yy]$ ]]; then echo "Yes"; else echo "No"; fi | tee -a $INSTALL_SUMMARY
 if [ "$ARCH" == "x86_64" ]; then
 	echo -en "Install 32-bit libraries:\t" | tee -a $INSTALL_SUMMARY
 	if [[ "$install32BitLibs" =~ ^[Yy]$ ]]; then echo "Yes"; else echo "$noReason"; fi | tee -a $INSTALL_SUMMARY
